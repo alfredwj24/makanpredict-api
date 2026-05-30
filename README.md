@@ -1,6 +1,6 @@
 # MakanPredict API
 
-Serves my Project 1 grocery price-tier model over HTTP and a web page, so anyone can check whether a Malaysian grocery item is priced **budget**, **fair**, or **premium** for where it's sold — in one request, no notebook required.
+Serves my Project 1 ([MakanPredict](https://github.com/alfredwj24/makanpredict)) grocery price-tier model over HTTP and a web page, so anyone can check whether a Malaysian grocery item is priced **budget**, **fair**, or **premium** for where it's sold — in one request, no notebook required.
 
 ![Python](https://img.shields.io/badge/python-3.10+-blue) ![FastAPI](https://img.shields.io/badge/FastAPI-0.136-009688) ![Streamlit](https://img.shields.io/badge/Streamlit-1.45-FF4B4B) ![License: MIT](https://img.shields.io/badge/License-MIT-yellow)
 
