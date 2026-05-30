@@ -1,0 +1,22 @@
+# --- Model artifact (large binary; copied from Project 1, not version-controlled) ---
+models/*.pkl
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# --- Virtual envs ---
+.venv/
+venv/
+env/
+
+# --- Streamlit ---
+.streamlit/secrets.toml
+
+# --- OS / editor ---
+.DS_Store
+.idea/
+.vscode/
