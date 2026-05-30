@@ -61,8 +61,7 @@ three-tier probability bars:
 # 1. Install
 pip install -r requirements.txt
 
-# 2. Make sure the model is in place (see models/README.md)
-#    models/price_classifier.pkl
+# 2. (the model ships in the repo at models/price_classifier.pkl)
 
 # 3. Run the API  ->  http://localhost:8000/docs
 uvicorn app.main:app --reload --port 8000
@@ -71,8 +70,9 @@ uvicorn app.main:app --reload --port 8000
 streamlit run streamlit_app.py
 ```
 
-The Streamlit app reads the API base URL from `$MAKANPREDICT_API` (default
-`http://localhost:8000`).
+The UI **auto-detects the backend**: if the API is running on `:8000` it calls it over
+HTTP; otherwise it loads the model **in-process**, so `streamlit run streamlit_app.py`
+works on its own too. Override the API location with `MAKANPREDICT_API=<url>`.
 
 ---
 
@@ -158,6 +158,14 @@ pytest
 ```
 23 tests: the model contract (`predict_price_tier`), every endpoint, all the 422 cases, the
 price-check verdicts, warm latency `< 200 ms`, and 10-way concurrency.
+
+---
+
+## Deploy
+
+The Streamlit app is self-contained (no API reachable → it loads the model in-process),
+so it one-click deploys to **Streamlit Community Cloud** — see
+**[docs/DEPLOY.md](docs/DEPLOY.md)**. Live demo: _add your `https://…streamlit.app` URL here_.
 
 ---
 

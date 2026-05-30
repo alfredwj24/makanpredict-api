@@ -1,10 +1,12 @@
-"""MakanPredict — Streamlit frontend for the price-tier API.
+"""MakanPredict — Streamlit frontend for the grocery price-tier model.
 
-Talks to the FastAPI service over HTTP (base URL from $MAKANPREDICT_API, default
-http://localhost:8000). All dropdown values come from the API's /metadata, so the
-UI stays in sync with the model automatically.
+The backend is auto-detected:
+  * if the FastAPI service is reachable (default http://localhost:8000, or whatever
+    $MAKANPREDICT_API points to), the UI calls it over HTTP;
+  * otherwise it loads the model **in-process** — so this runs standalone with no
+    separate API server (e.g. on Streamlit Community Cloud).
 
-Run:  streamlit run streamlit_app.py     (with the API already running)
+Run:  streamlit run streamlit_app.py
 """
 from __future__ import annotations
 
@@ -30,19 +32,17 @@ st.markdown(
 )
 
 
-# --------------------------------------------------------------------------- API
-@st.cache_data(ttl=300, show_spinner=False)
-def fetch_metadata() -> dict:
-    r = httpx.get(f"{API_BASE}/metadata", timeout=15)
-    r.raise_for_status()
-    return r.json()
-
-
-def api_health() -> dict | None:
+# ----------------------------------------------------------------- backend layer
+@st.cache_resource(show_spinner=False)
+def get_backend() -> tuple:
+    """Decide once per process: use the HTTP API if reachable, else in-process model."""
     try:
-        return httpx.get(f"{API_BASE}/health", timeout=5).json()
+        r = httpx.get(f"{API_BASE}/health", timeout=2)
+        if r.status_code == 200 and r.json().get("model_loaded"):
+            return ("api", API_BASE)
     except Exception:
-        return None
+        pass
+    return ("direct", None)
 
 
 def error_text(resp: httpx.Response) -> str:
@@ -53,6 +53,43 @@ def error_text(resp: httpx.Response) -> str:
         return str(detail)
     except Exception:
         return f"HTTP {resp.status_code}"
+
+
+@st.cache_data(ttl=300, show_spinner="Loading model…")
+def load_metadata() -> dict:
+    mode, base = get_backend()
+    if mode == "api":
+        r = httpx.get(f"{base}/metadata", timeout=15)
+        r.raise_for_status()
+        return r.json()
+    from app.catalog import get_metadata
+    return get_metadata()
+
+
+def call_predict(payload: dict) -> tuple:
+    """Return (ok, result_dict_or_error_message)."""
+    mode, base = get_backend()
+    if mode == "api":
+        r = httpx.post(f"{base}/predict", json=payload, timeout=15)
+        return (r.status_code == 200, r.json() if r.status_code == 200 else error_text(r))
+    from app.predict import predict_price_tier
+    try:
+        return (True, predict_price_tier(payload))
+    except ValueError as exc:
+        return (False, str(exc))
+
+
+def call_price_check(item: str, price: float) -> tuple:
+    """Return (ok, result_dict_or_error_message)."""
+    mode, base = get_backend()
+    if mode == "api":
+        r = httpx.post(f"{base}/price-check", json={"item": item, "price": price}, timeout=15)
+        return (r.status_code == 200, r.json() if r.status_code == 200 else error_text(r))
+    from app.catalog import price_check
+    try:
+        return (True, price_check(item, price))
+    except ValueError as exc:
+        return (False, str(exc))
 
 
 # ------------------------------------------------------------------------ render
@@ -117,13 +154,17 @@ st.caption(
 )
 
 try:
-    md = fetch_metadata()
-except Exception:
+    md = load_metadata()
+except Exception as exc:
     st.error(
-        f"Can't reach the MakanPredict API at `{API_BASE}`.\n\n"
-        "Start it first:\n\n```\nuvicorn app.main:app --port 8000\n```"
+        "Couldn't load the model.\n\n"
+        "- **API mode:** start it with `uvicorn app.main:app --port 8000`.\n"
+        "- **Direct mode:** ensure `models/price_classifier.pkl` is present.\n\n"
+        f"Details: `{exc}`"
     )
     st.stop()
+
+mode, base = get_backend()
 
 with st.sidebar:
     st.subheader("Model")
@@ -136,12 +177,7 @@ with st.sidebar:
         f"{c['items']} items · {c['item_categories']} categories · "
         f"{c['premise_types']} store types · {c['states']} states"
     )
-    health = api_health()
-    if health and health.get("model_loaded"):
-        st.success("API connected ✓")
-    else:
-        st.warning("API unreachable")
-    st.caption(f"API: `{API_BASE}`")
+    st.caption("Serving: " + (f"API @ {base}" if mode == "api" else "direct (in-process model)"))
 
 st.subheader("1 · Describe the item & place")
 col1, col2 = st.columns(2)
@@ -159,17 +195,14 @@ use_item = item_choice != ANY
 if st.button("Predict price tier", type="primary", use_container_width=True, key="predict_btn"):
     payload = {"premise_type": premise_type, "state": state}
     payload["item" if use_item else "item_category"] = item_choice if use_item else category
-    try:
-        resp = httpx.post(f"{API_BASE}/predict", json=payload, timeout=15)
-        if resp.status_code == 200:
-            ctx = (item_choice if use_item else f"any {category}") + f" · {premise_type} · {state}"
-            st.session_state["prediction"] = resp.json()
-            st.session_state["prediction_ctx"] = ctx
-        else:
-            st.session_state.pop("prediction", None)
-            st.error(error_text(resp))
-    except Exception as exc:
-        st.error(f"Request failed: {exc}")
+    ok, data = call_predict(payload)
+    if ok:
+        ctx = (item_choice if use_item else f"any {category}") + f" · {premise_type} · {state}"
+        st.session_state["prediction"] = data
+        st.session_state["prediction_ctx"] = ctx
+    else:
+        st.session_state.pop("prediction", None)
+        st.error(data)
 
 if st.session_state.get("prediction"):
     render_prediction(st.session_state["prediction"], st.session_state.get("prediction_ctx", ""))
@@ -194,11 +227,11 @@ else:
         if price <= 0:
             st.warning("Enter a price greater than 0.")
         else:
-            resp = httpx.post(f"{API_BASE}/price-check", json={"item": item_choice, "price": price}, timeout=15)
-            if resp.status_code == 200:
-                render_price_check(resp.json())
+            ok, data = call_price_check(item_choice, price)
+            if ok:
+                render_price_check(data)
             else:
-                st.error(error_text(resp))
+                st.error(data)
 
 st.divider()
 st.caption("MakanPredict · Project 2 of 3 · FastAPI + Streamlit over a Project 1 XGBoost model.")

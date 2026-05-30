@@ -1,5 +1,8 @@
-# --- Model artifact (large binary; copied from Project 1, not version-controlled) ---
+# --- Model artifacts ---
+# price_classifier.pkl IS committed (~16 MB) so the app deploys/runs out-of-the-box.
+# Any other .pkl stays out of git.
 models/*.pkl
+!models/price_classifier.pkl
 
 # --- Python ---
 __pycache__/
