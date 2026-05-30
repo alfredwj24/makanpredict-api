@@ -208,23 +208,6 @@ This is the serving layer of a 3-project set. Project 1 ([MakanPredict](https://
 - **Model** — scikit-learn, xgboost, joblib
 - **Testing** — pytest, httpx
 
-## Common interview questions about this project
-
-**Why FastAPI?**
-I wanted input validation, automatic API docs, and speed without wiring three libraries together. FastAPI gives all three from one type-annotated function: Pydantic validates the request, `/docs` is generated from the same models, and it's async-capable so a slow call doesn't block the others. For a model-serving API where the contract — item, shop, state → tier — is the whole point, having validation and docs come straight from the schema means they can't fall out of sync. Flask would have meant building validation and docs by hand.
-
-**Why load the model once at startup instead of per request?**
-The `.pkl` is 16 MB and unpickling it plus warming XGBoost takes about 1.3 seconds. Inside the request handler, every call would pay that — predictions would be ~170× slower and 10 concurrent users would each trigger their own load. Instead I load it once in FastAPI's lifespan startup and keep it in memory, so each request just calls `predict_proba` and returns in ~8 ms. It's the difference between 7.5 ms and 1.3 s per request.
-
-**How do you validate input and handle bad requests?**
-Pydantic models sit in front of the model. `premise_type` and `state` are checked against the exact 5 shop types and 16 states the model was trained on — read from the `.pkl` itself, so they can't drift — and the body must include either `item` or `item_category`. Anything else returns HTTP 422 with a message that names the valid options; sending `"Penang"` tells you the data uses `"Pulau Pinang"`. The model never sees an input it doesn't understand, so it can't return a confidently wrong answer to garbage.
-
-**What is the request-response cycle?**
-A POST hits `/predict` with a JSON body. FastAPI parses it into a Pydantic `PredictRequest` and runs the validators — a bad shop type or state stops here with a 422. A valid request becomes a one-row DataFrame, the in-memory pipeline builds the features and calls `predict_proba`, and the three class probabilities are packed into a `PredictResponse` and serialised back to JSON. The median round trip is 7.5 ms. The Streamlit page does exactly this over HTTP and draws the result as a coloured card.
-
-**How would you deploy this for real?**
-Two clean options. Simplest: the Streamlit app already falls back to loading the model in-process, so it one-click deploys to Streamlit Community Cloud (guide in `docs/DEPLOY.md`). Keeping the API live: containerise it with a Dockerfile, push to Render or Fly.io, and point the Streamlit UI at that URL via an env var. For real traffic I'd add an API key and a rate limiter, a `/version` endpoint for the model, and an LRU cache — the inputs are low-cardinality (5 × 16 × 252), so identical requests can be served from memory.
-
 ## License
 
 MIT — see [LICENSE](LICENSE). Price data © DOSM, licensed CC BY 4.0.
