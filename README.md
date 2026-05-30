@@ -1,7 +1,7 @@
 # 🛒 MakanPredict API
 
 A **FastAPI** service + **Streamlit** frontend that serves the grocery price-tier model from
-[Project 1](../makanpredict). Given a grocery **item** (or category), a **store type**, and a
+[MakanPredict](https://github.com/alfredwj24/makanpredict). Given a grocery **item** (or category), a **store type**, and a
 **state**, it predicts whether the price is likely to be **budget**, **fair**, or **premium**
 relative to that item's national median — and returns the probability of each tier.
 
@@ -31,8 +31,11 @@ three-tier probability bars:
 
 ![MakanPredict UI](docs/screenshot.png)
 
+<<<<<<< HEAD
 > The live result card — predicted tier, confidence, and all three tier probabilities.
 
+=======
+>>>>>>> 69458693ad0e254c6d7807c70d74c39c833afc2c
 ---
 
 ## Project structure
