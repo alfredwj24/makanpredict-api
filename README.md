@@ -31,7 +31,7 @@ three-tier probability bars:
 
 ![MakanPredict UI](docs/screenshot.png)
 
-> Run the app (below) and drop a screenshot at `docs/screenshot.png`.
+> The live result card — predicted tier, confidence, and all three tier probabilities.
 
 ---
 
