@@ -31,8 +31,6 @@ three-tier probability bars:
 
 ![MakanPredict UI](docs/screenshot.png)
 
-> Run the app (below) and drop a screenshot at `docs/screenshot.png`.
-
 ---
 
 ## Project structure
