@@ -1,178 +1,230 @@
-# 🛒 MakanPredict API
+# MakanPredict API
 
-A **FastAPI** service + **Streamlit** frontend that serves the grocery price-tier model from
-[MakanPredict](https://github.com/alfredwj24/makanpredict). Given a grocery **item** (or category), a **store type**, and a
-**state**, it predicts whether the price is likely to be **budget**, **fair**, or **premium**
-relative to that item's national median — and returns the probability of each tier.
+Serves my Project 1 grocery price-tier model over HTTP and a web page, so anyone can check whether a Malaysian grocery item is priced **budget**, **fair**, or **premium** for where it's sold — in one request, no notebook required.
 
-> Project 2 of a 3-part AI portfolio. Model: XGBoost on Malaysia's DOSM PriceCatcher data
-> (191,904 records · 273 items · 2,130 shops · 16 states), weighted F1 **0.739**, with SHAP
-> explainability in Project 1.
+![Python](https://img.shields.io/badge/python-3.10+-blue) ![FastAPI](https://img.shields.io/badge/FastAPI-0.136-009688) ![Streamlit](https://img.shields.io/badge/Streamlit-1.45-FF4B4B) ![License: MIT](https://img.shields.io/badge/License-MIT-yellow)
 
 ---
 
-## Why there's no `price` input
+The model from Project 1 worked, but only if you opened a Jupyter notebook, imported the right module, and typed the exact dictionary it expected. A shopper in Ipoh can't do that, and neither can a recruiter reading this on their phone. MakanPredict API takes that same XGBoost model and puts it behind a single HTTP request: send an item, a shop type, and a state, get back a tier and the three probabilities in about 8 milliseconds. A Streamlit page wraps it in dropdowns — pick *chicken*, *wet market*, *Sabah* and the answer appears as a coloured card — so a model that used to live in a 16 MB `.pkl` on my laptop is now something anyone can use from a web page.
 
-A store-item's tier is defined *relative to that item's national median price*, so the model
-**never sees the raw price** — feeding it in would trivially determine the label. The model
-answers *"for this item, store type and state, is the price likely to be over/under/fairly
-priced?"* from context alone.
+## Try it
 
-For the original *"is THIS price fair?"* question, the separate **`POST /price-check`** endpoint
-applies the label rule directly (price vs the item's national median). It's deterministic — the
-exact threshold rule, **not** the ML model — and is labelled as such.
+```bash
+# Chicken at a wet market in Sabah (East Malaysia, higher cost of living)
+curl -s localhost:8000/predict -H 'content-type: application/json' -d '{
+  "item": "AYAM BERSIH - STANDARD", "premise_type": "Pasar Basah", "state": "Sabah"
+}'
+```
+```json
+{"prediction":"premium","confidence":0.778,
+ "probabilities":{"budget":0.0335,"fair":0.1886,"premium":0.778}}
+```
 
----
+```bash
+# Holland potatoes at a hypermarket in Kedah (a low-cost state) — a budget call
+curl -s localhost:8000/predict -H 'content-type: application/json' -d '{
+  "item": "UBI KENTANG HOLLAND", "premise_type": "Hypermarket", "state": "Kedah"
+}'
+```
+```json
+{"prediction":"budget","confidence":0.9063,
+ "probabilities":{"budget":0.9063,"fair":0.0607,"premium":0.0331}}
+```
 
-## Screenshots
+The price is never sent in — it's what *defines* the tiers — so the model predicts the expected tier from context alone (item, shop type, state).
 
-The Streamlit UI — dropdowns driven live from the API, a colour-coded result card, and the
-three-tier probability bars:
+![MakanPredict UI](reports/screenshot.png)
 
-![MakanPredict UI](docs/screenshot.png)
+## Results
 
-<<<<<<< HEAD
-> The live result card — predicted tier, confidence, and all three tier probabilities.
+| Metric | Value |
+|---|---|
+| HTTP endpoints | 5 JSON + an auto-generated `/docs` |
+| Median response time | 7.5 ms (warm, keep-alive connection) |
+| Concurrency | 200 / 200 requests at 10 at once, 0 errors (168 req/s) |
+| Model served | XGBoost, weighted F1 0.739 (from Project 1) |
+| Valid inputs | 5 shop types × 16 states × 252 items (33 categories) |
+| Input validation | Pydantic, 3 rejection rules → HTTP 422 |
+| Tests | 23 passing |
 
-=======
->>>>>>> 69458693ad0e254c6d7807c70d74c39c833afc2c
----
+## How it works
+
+```
+ request                  FastAPI + Pydantic         price_classifier.pkl         JSON                  Streamlit
+ POST /predict            validate the body,         sklearn pipeline +           {prediction,          dropdowns +
+ {item,             ───►  reject unknown        ───► XGBoost.predict_proba   ───► confidence,      ───► result card
+  premise_type,           shop type / state            (loaded ONCE,               probabilities}        (reads /metadata
+  state}                  → 422                         at startup)                                        for its options)
+```
+
+The model is loaded **once**, in FastAPI's startup, not on each request: the `.pkl` is 16 MB and unpickling it plus warming XGBoost takes about 1.3 seconds, so loading per call would make every response roughly 170× slower and let 10 users each trigger their own load. After startup it stays in memory and each prediction reads from it in ~8 ms. **Pydantic sits in front of the model** — a request is checked against the 5 valid shop types and 16 valid states *before* it reaches the model, so a typo like `"Penang"` (the data uses `"Pulau Pinang"`) comes back as a clear 422 instead of a wrong tier. The request-response cycle is deliberately small: JSON in, validate, one `predict_proba` call, JSON out — which is what keeps the median at 7.5 ms and lets one process handle 10 concurrent requests with no errors. The Streamlit page is just another client of the same API: it reads `/metadata` to fill its dropdowns, so the UI can never offer an option the model would reject.
+
+## API endpoints
+
+| Method | Endpoint | What it does |
+|---|---|---|
+| `POST` | `/predict` | Returns the price tier + confidence + all three probabilities for an item / shop / state |
+| `POST` | `/price-check` | Compares a price you enter to the item's national median — the deterministic label rule, not the model |
+| `GET` | `/metadata` | Lists the valid shop types, states, categories and items (this is what fills the Streamlit dropdowns) |
+| `GET` | `/health` | Liveness check and whether the model is loaded |
+| `GET` | `/` | Service info and the endpoint list |
+| `GET` | `/docs` | Interactive Swagger UI, generated free by FastAPI |
+
+## Request & response schema
+
+**Request** — `POST /predict` (defined in [`app/schemas.py`](app/schemas.py)):
+
+| Field | Type | Required | Example |
+|---|---|---|---|
+| `premise_type` | string, one of 5 shop types | yes | `"Pasar Basah"` |
+| `state` | string, one of 16 states | yes | `"Sabah"` |
+| `item` | string, free text | one of `item` / `item_category` | `"AYAM BERSIH - STANDARD"` |
+| `item_category` | string, free text | one of `item` / `item_category` | `"BERAS"` |
+
+**Response** — `200 OK`:
+
+| Field | Type | Example |
+|---|---|---|
+| `prediction` | string — `budget` \| `fair` \| `premium` | `"premium"` |
+| `confidence` | float, 0–1 | `0.778` |
+| `probabilities` | object of 3 floats summing to 1 | `{"budget":0.0335,"fair":0.1886,"premium":0.778}` |
+
+## Error handling
+
+A bad request should fail loudly and clearly, not quietly return a wrong tier. Two examples, both real responses:
+
+**Unsupported state** — `"Penang"` isn't in the data (DOSM uses `"Pulau Pinang"`):
+```bash
+curl -s localhost:8000/predict -H 'content-type: application/json' -d '{
+  "item": "AYAM BERSIH - STANDARD", "premise_type": "Pasar Basah", "state": "Penang"
+}'
+```
+```json
+HTTP 422
+{"detail":[{"type":"value_error","loc":["body"],
+  "msg":"Value error, Unsupported state 'Penang'. Valid options: ['Johor', 'Kedah', 'Kelantan', 'Melaka', 'Negeri Sembilan', 'Pahang', 'Perak', 'Perlis', 'Pulau Pinang', 'Sabah', 'Sarawak', 'Selangor', 'Terengganu', 'W.P. Kuala Lumpur', 'W.P. Labuan', 'W.P. Putrajaya'].",
+  "input":{"item":"AYAM BERSIH - STANDARD","premise_type":"Pasar Basah","state":"Penang"}}]}
+```
+
+**Missing input** — neither `item` nor `item_category` given:
+```bash
+curl -s localhost:8000/predict -H 'content-type: application/json' -d '{
+  "premise_type": "Pasar Basah", "state": "Sabah"
+}'
+```
+```json
+HTTP 422
+{"detail":[{"type":"value_error","loc":["body"],
+  "msg":"Value error, Provide one of 'item' or 'item_category'.",
+  "input":{"premise_type":"Pasar Basah","state":"Sabah"}}]}
+```
+
+Catching these at the edge means the model only ever sees inputs it understands, and the caller gets a message naming exactly what to fix — not a stack trace, and not a confidently wrong `premium`.
 
 ## Project structure
 
 ```
-.
-├── app/                      # FastAPI service + the Project 1 model code
-│   ├── main.py               #   endpoints: / · /health · /metadata · /predict · /price-check
-│   ├── schemas.py            #   Pydantic request/response models (strict 422 validation)
-│   ├── catalog.py            #   artifact-driven metadata + the deterministic price-check
-│   ├── predict.py            #   Project 1 prediction interface (predict_price_tier)
-│   └── features.py           #   Project 1 feature engineering + the tier label rule
+makanpredict-api/
+├── app/
+│   ├── main.py            # FastAPI app: the 5 endpoints; loads the model once at startup
+│   ├── schemas.py         # Pydantic request/response models — input validation lives here
+│   ├── catalog.py         # reads the .pkl's valid values (dropdowns/metadata) + the price-check
+│   ├── predict.py         # Project 1's predict_price_tier — imported as-is, model loaded once
+│   └── features.py        # Project 1's feature engineering + the budget/fair/premium label rule
 ├── models/
-│   └── price_classifier.pkl  # trained artifact (git-ignored — see models/README.md)
-├── streamlit_app.py          # the frontend
-├── tests/                    # pytest: model contract, endpoints/422s, perf + concurrency
+│   └── price_classifier.pkl  # the trained model from Project 1 (committed, ~16 MB, loaded once)
+├── tests/
+│   ├── test_api.py        # endpoints: happy paths, the 422 cases, /metadata, price-check
+│   ├── test_model.py      # predict_price_tier contract (shape, probabilities, missing fields)
+│   └── test_perf.py       # <200 ms warm latency + 10-way concurrency
+├── streamlit_app.py       # the web UI (dropdowns + result card); calls the API, or the model directly
+├── reports/
+│   └── screenshot.png     # the Streamlit app
+├── docs/
+│   └── DEPLOY.md          # one-click Streamlit Community Cloud deploy guide
 ├── requirements.txt
-└── pytest.ini
+├── pytest.ini
+└── README.md
 ```
 
----
+## Quick start
 
-## Quickstart
-
+**1. Clone** — the trained model ships in the repo, so it runs straight away.
 ```bash
-# 1. Install
+git clone https://github.com/alfredwj24/makanpredict-api.git
+cd makanpredict-api
+```
+
+**2. Install** — fastapi, uvicorn, streamlit, pydantic, pytest and the model stack (scikit-learn, xgboost, joblib).
+```bash
 pip install -r requirements.txt
+```
 
-# 2. (the model ships in the repo at models/price_classifier.pkl)
+**3. Run the API** — loads the model once, then serves on port 8000. Open http://localhost:8000/docs.
+```bash
+uvicorn app.main:app --port 8000
+```
 
-# 3. Run the API  ->  http://localhost:8000/docs
-uvicorn app.main:app --reload --port 8000
-
-# 4. In another terminal, run the UI  ->  http://localhost:8501
+**4. Run the web app** — in a second terminal. Open http://localhost:8501.
+```bash
 streamlit run streamlit_app.py
 ```
 
-The UI **auto-detects the backend**: if the API is running on `:8000` it calls it over
-HTTP; otherwise it loads the model **in-process**, so `streamlit run streamlit_app.py`
-works on its own too. Override the API location with `MAKANPREDICT_API=<url>`.
-
----
-
-## API
-
-| Method & path | Purpose |
-|---|---|
-| `POST /predict` | ML price-tier prediction (tier + confidence + all three probabilities) |
-| `POST /price-check` | Deterministic verdict: a price vs the item's national median (label rule) |
-| `GET /metadata` | Valid premise types / states / categories / items + model info |
-| `GET /health` | Liveness + model-loaded check |
-| `GET /` | Basic info |
-| `GET /docs` | Interactive Swagger UI (free from FastAPI) |
-
-### `POST /predict`
-
+**5. Or just call it** — chicken at a wet market in Sarawak:
 ```bash
-curl -s localhost:8000/predict -H 'content-type: application/json' -d '{
-  "item": "AYAM BERSIH - STANDARD",
-  "premise_type": "Pasar Basah",
-  "state": "Sabah"
-}'
-```
-```json
-{
-  "prediction": "premium",
-  "confidence": 0.778,
-  "probabilities": { "budget": 0.034, "fair": 0.189, "premium": 0.778 }
-}
+curl -s localhost:8000/predict -H 'content-type: application/json' \
+  -d '{"item":"AYAM BERSIH - STANDARD","premise_type":"Pasar Basah","state":"Sarawak"}'
+# {"prediction":"premium","confidence":0.8576,
+#  "probabilities":{"budget":0.0233,"fair":0.1191,"premium":0.8576}}
 ```
 
-**Request fields**
-
-- `premise_type` *(required)* — one of 5 store types. Unsupported → **422**.
-- `state` *(required)* — one of 16 states. Unsupported → **422**.
-- `item` **or** `item_category` *(one required)* — free text; unknown values fall back
-  gracefully (not rejected). Provide neither → **422**.
-
-> Pass `item_category` (e.g. `"BERAS"`) instead of `item` to predict for a whole category.
-
-### `POST /price-check`
-
+Run the tests:
 ```bash
-curl -s localhost:8000/price-check -H 'content-type: application/json' -d '{
-  "item": "AYAM BERSIH - STANDARD", "price": 12.50
-}'
-```
-```json
-{
-  "item": "AYAM BERSIH - STANDARD", "item_category": "AYAM",
-  "price": 12.5, "national_median": 8.6, "ratio": 1.4535, "verdict": "premium",
-  "note": "Deterministic label rule (price vs the item's national median) — not the ML prediction."
-}
+pytest -q
+# 23 passed
 ```
 
-Tier rule: `budget` if price < 0.90× median · `premium` if price > 1.10× median · else `fair`.
+## The model it serves
 
----
+Inference is a single file — `models/price_classifier.pkl` — built and saved by Project 1 ([MakanPredict](https://github.com/alfredwj24/makanpredict)). It bundles the fitted scikit-learn pipeline, the XGBoost model, the feature reference, the item catalog, and the class list, so the API needs nothing else to answer a request. The API loads it once at startup and reads its catalog to build `/metadata`, which means the valid shop types, states and items it advertises are exactly the ones the model knows — they can't drift. The heavy work (cleaning 191,904 records, comparing 3 models, fitting XGBoost) happened once, offline, in Project 1; here the same `.pkl` answers many requests from memory.
 
-## Validation
+## Known limitations
 
-`premise_type` and `state` are checked against the values the model actually knows (sourced
-from the artifact) → a clear **422** listing the valid options. Missing required fields → **422**.
-`item` / `item_category` are free text and fall back gracefully, so they are never rejected.
+- **Runs locally, not yet on a public URL.** Anyone on the same machine or Wi-Fi can use it, but it isn't live on the internet. *In production:* the Streamlit app already falls back to loading the model in-process, so it one-click deploys to Streamlit Community Cloud (see [`docs/DEPLOY.md`](docs/DEPLOY.md)); the API itself would go behind a host like Render or Fly.io.
+- **One frozen model version.** The API serves whatever `.pkl` it loaded at startup, with no way to roll back or A/B two versions. *In production:* version the artifact, add a `/version` endpoint, and load from a model registry so a new model is a deploy, not a file swap.
+- **No authentication or rate-limiting.** Any caller can hit `/predict` as often as they like. *In production:* an API key or JWT plus a request limiter (e.g. `slowapi`) behind a gateway.
+- **No caching — every request recomputes.** Identical requests re-run the model each time. *In production:* an LRU or Redis cache keyed on the request; the inputs are low-cardinality (5 × 16 × 252), so a cache would absorb most repeat traffic.
 
----
+## Connection to the portfolio
 
-## Performance
-
-Measured locally (Apple Silicon), model loaded once at startup via `lru_cache`:
-
-- **Single warm request:** ~7 ms
-- **200 requests at 10 concurrent:** 200/200 OK · p50 **54 ms** · p95 **71 ms** · ~181 req/s
-
-Both well within the **< 200 ms** / **~10 concurrent** target.
-
----
-
-## Testing
-
-```bash
-pytest
-```
-23 tests: the model contract (`predict_price_tier`), every endpoint, all the 422 cases, the
-price-check verdicts, warm latency `< 200 ms`, and 10-way concurrency.
-
----
-
-## Deploy
-
-The Streamlit app is self-contained (no API reachable → it loads the model in-process),
-so it one-click deploys to **Streamlit Community Cloud** — see
-**[docs/DEPLOY.md](docs/DEPLOY.md)**. Live demo: _add your `https://…streamlit.app` URL here_.
-
----
+This is the serving layer of a 3-project set. Project 1 ([MakanPredict](https://github.com/alfredwj24/makanpredict)) builds the model from real DOSM price data; this project wraps that model in an API and a web page so people, not notebooks, can use it. Project 3 (a data pipeline) would close the loop — scheduled jobs that pull each new month of PriceCatcher data, re-label it, and retrain the `.pkl` this API serves. Train once, serve many: the model is built there, offline; it answers requests here, online and often.
 
 ## Tech stack
 
-FastAPI · Pydantic v2 · Uvicorn · Streamlit · pytest · httpx — over a scikit-learn pipeline +
-XGBoost model (joblib). Python 3.10+.
+- **Serving** — FastAPI, uvicorn
+- **Validation** — pydantic
+- **Frontend** — streamlit
+- **Model** — scikit-learn, xgboost, joblib
+- **Testing** — pytest, httpx
+
+## Common interview questions about this project
+
+**Why FastAPI?**
+I wanted input validation, automatic API docs, and speed without wiring three libraries together. FastAPI gives all three from one type-annotated function: Pydantic validates the request, `/docs` is generated from the same models, and it's async-capable so a slow call doesn't block the others. For a model-serving API where the contract — item, shop, state → tier — is the whole point, having validation and docs come straight from the schema means they can't fall out of sync. Flask would have meant building validation and docs by hand.
+
+**Why load the model once at startup instead of per request?**
+The `.pkl` is 16 MB and unpickling it plus warming XGBoost takes about 1.3 seconds. Inside the request handler, every call would pay that — predictions would be ~170× slower and 10 concurrent users would each trigger their own load. Instead I load it once in FastAPI's lifespan startup and keep it in memory, so each request just calls `predict_proba` and returns in ~8 ms. It's the difference between 7.5 ms and 1.3 s per request.
+
+**How do you validate input and handle bad requests?**
+Pydantic models sit in front of the model. `premise_type` and `state` are checked against the exact 5 shop types and 16 states the model was trained on — read from the `.pkl` itself, so they can't drift — and the body must include either `item` or `item_category`. Anything else returns HTTP 422 with a message that names the valid options; sending `"Penang"` tells you the data uses `"Pulau Pinang"`. The model never sees an input it doesn't understand, so it can't return a confidently wrong answer to garbage.
+
+**What is the request-response cycle?**
+A POST hits `/predict` with a JSON body. FastAPI parses it into a Pydantic `PredictRequest` and runs the validators — a bad shop type or state stops here with a 422. A valid request becomes a one-row DataFrame, the in-memory pipeline builds the features and calls `predict_proba`, and the three class probabilities are packed into a `PredictResponse` and serialised back to JSON. The median round trip is 7.5 ms. The Streamlit page does exactly this over HTTP and draws the result as a coloured card.
+
+**How would you deploy this for real?**
+Two clean options. Simplest: the Streamlit app already falls back to loading the model in-process, so it one-click deploys to Streamlit Community Cloud (guide in `docs/DEPLOY.md`). Keeping the API live: containerise it with a Dockerfile, push to Render or Fly.io, and point the Streamlit UI at that URL via an env var. For real traffic I'd add an API key and a rate limiter, a `/version` endpoint for the model, and an LRU cache — the inputs are low-cardinality (5 × 16 × 252), so identical requests can be served from memory.
+
+## License
+
+MIT — see [LICENSE](LICENSE). Price data © DOSM, licensed CC BY 4.0.
